@@ -92,7 +92,6 @@ typedef struct mon_rec
 static int	nesting_level = 0;
 
 extern void _PG_init(void);
-extern void _PG_fini(void);
 
 /* LWlock to mange the reading and writing the hash table. */
 LWLock	   *mon_lock;
@@ -162,7 +161,11 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 #define _standard_ProcessUtility \
         standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 #endif
+
 /* Saved hook values in case of unload */
+#if PG_VERSION_NUM >= 150000
+static shmem_request_hook_type prev_shmem_request_hook = NULL;
+#endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static void shmem_shutdown(int code, Datum arg);
 
@@ -195,6 +198,33 @@ static int64 row_bucket_bounds[ROWNUMBUCKETS] = {
  * current query
  */
 static mon_rec temp_entry;
+
+/*
+ * Estimate shared memory space needed.
+ */
+static Size
+qmon_memsize(void)
+{
+        return hash_estimate_size(MON_HT_SIZE, sizeof(mon_rec));
+
+}
+
+#if PG_VERSION_NUM >= 150000
+/*
+ * shmem_request hook: request additional shared resources.  We'll allocate or
+ * attach to the shared resources in shmem_startup().
+ */
+static void
+shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(qmon_memsize());
+	RequestNamedLWLockTranche("mon_lock", 1);
+}
+#endif
+
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -251,16 +281,6 @@ shmem_shutdown(int code, Datum arg)
 }
 
 /*
- * Estimate shared memory space needed.
- */
-static Size
-qmon_memsize(void)
-{
-        return hash_estimate_size(MON_HT_SIZE, sizeof(mon_rec));
-
-}
-
-/*
  * Module Load Callback
  */
 void
@@ -311,6 +331,8 @@ _PG_init(void)
                                                             NULL,
                                                             NULL,
                                                             NULL);
+
+#if PG_VERSION_NUM < 150000
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
          * the postmaster process.)  We'll allocate or attach to the shared
@@ -318,8 +340,11 @@ _PG_init(void)
          */
         RequestAddinShmemSpace(qmon_memsize());
         RequestNamedLWLockTranche("mon_lock", 1);
-
+#else
         /* Install Hooks */
+        prev_shmem_request_hook = shmem_request_hook;
+        shmem_request_hook = shmem_request;
+#endif
         prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = shmem_startup;
         prev_ExecutorStart = ExecutorStart_hook;
@@ -333,22 +358,6 @@ _PG_init(void)
         prev_ProcessUtility = ProcessUtility_hook;
 	    ProcessUtility_hook = PU_hook;
 }
-
-/*
- * Module unload callback
- */
-void
-_PG_fini(void)
-{
-        /* Uninstall hooks. */
-        shmem_startup_hook = prev_shmem_startup_hook;
-        ExecutorStart_hook = prev_ExecutorStart;
-        ExecutorRun_hook = prev_ExecutorRun;
-        ExecutorFinish_hook = prev_ExecutorFinish;
-        ExecutorEnd_hook = prev_ExecutorEnd;
-        ProcessUtility_hook = prev_ProcessUtility;
-}
-
 
 /*
  * ExecutorStart hook: start up logging if needed
