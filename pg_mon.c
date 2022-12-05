@@ -52,7 +52,7 @@ PG_MODULE_MAGIC;
 /* GUC variables */
 static bool CONFIG_PLAN_INFO_IMMEDIATE = false;
 static bool CONFIG_PLAN_INFO_DISABLE = false;
-static bool CONFIG_LOG_NEW_QUERY = true;
+static bool CONFIG_LOG_NEW_QUERY = false;
 static int MON_HT_SIZE = 5000;
 
 #define MON_COLS  20
