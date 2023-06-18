@@ -936,10 +936,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
 #if PG_VERSION_NUM >= 160000
                             datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
+                    arry = construct_array_builtin(datums, idx, OIDOID);
 #else
                             datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
-#endif
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+#endif
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->index_scans[0] == 0)
@@ -952,10 +953,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
 #if PG_VERSION_NUM >= 160000
                             datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
+                    arry = construct_array_builtin(datums, idx, OIDOID);
 #else
                             datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
-#endif
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+#endif
                     values[i++] = PointerGetDatum(arry);
                 }
                 if (!entry->ModifyTable && entry->bitmap_scans[0] == 0)
@@ -968,10 +970,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
 #if PG_VERSION_NUM >= 160000
                             datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
+                    arry = construct_array_builtin(datums, idx, OIDOID);
 #else
                             datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
-#endif
                     arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+#endif
                     values[i++] = PointerGetDatum(arry);
                 }
                 values[i++] = NameGetDatum(&entry->other_scan);
@@ -991,14 +994,22 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     numdatums[idx++] = Int64GetDatum(entry->query_time_buckets[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(numdatums, idx, INT4OID);
+#else
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
 
                 for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
                      numdatums[idx++] = Int64GetDatum(entry->query_time_freq[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(numdatums, idx, INT4OID);
+#else
                 arry = construct_array(numdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
                 numdatums = NULL;
                 arry = NULL;
@@ -1017,14 +1028,22 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->actual_row_buckets[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(rownumdatums, idx, INT4OID);
+#else
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
 
                 for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->actual_row_freq[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(rownumdatums, idx, INT4OID);
+#else
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
                 last_fill_bucket = 0;
 
@@ -1040,14 +1059,22 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->est_row_buckets[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(rownumdatums, idx, INT4OID);
+#else
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
 
                 for (n = 0, idx = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->est_row_freq[n]);
                 }
+#if PG_VERSION_NUM >= 160000
+                arry = construct_array_builtin(rownumdatums, idx, INT4OID);
+#else
                 arry = construct_array(rownumdatums, idx, INT4OID, sizeof(int), true, 'i');
+#endif
                 values[i++] = PointerGetDatum(arry);
 
                 tuplestore_putvalues(tupstore, tupdesc, values, nulls);
