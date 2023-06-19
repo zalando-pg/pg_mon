@@ -934,12 +934,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
+                        datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
 #if PG_VERSION_NUM >= 160000
-                            datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
                     arry = construct_array_builtin(datums, idx, OIDOID);
 #else
-                            datums[idx++] = ObjectIdGetDatum(&entry->seq_scans[n]);
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
 #endif
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -951,12 +950,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
+                        datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
 #if PG_VERSION_NUM >= 160000
-                            datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
                     arry = construct_array_builtin(datums, idx, OIDOID);
 #else
-                            datums[idx++] = ObjectIdGetDatum(&entry->index_scans[n]);
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
 #endif
                     values[i++] = PointerGetDatum(arry);
                 }
@@ -968,12 +966,11 @@ pg_mon(PG_FUNCTION_ARGS)
                     ArrayType  *arry;
                     int n = 0, idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
+                        datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
 #if PG_VERSION_NUM >= 160000
-                            datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
                     arry = construct_array_builtin(datums, idx, OIDOID);
 #else
-                            datums[idx++] = ObjectIdGetDatum(&entry->bitmap_scans[n]);
-                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), false, 'i');
+                    arry = construct_array(datums, idx, OIDOID, sizeof(Oid), true, 'i');
 #endif
                     values[i++] = PointerGetDatum(arry);
                 }
