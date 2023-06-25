@@ -244,10 +244,10 @@ shmem_startup(void)
         LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
         memset(&info, 0, sizeof(info));
-        info.keysize = sizeof(uint32);
+        info.keysize = sizeof(int64);
         info.entrysize = sizeof(mon_rec);
 #if PG_VERSION_NUM > 100000
-        info.hash = uint32_hash;
+        info.hash = tag_hash;
 
         mon_ht = ShmemInitHash("mon_hash", MON_HT_SIZE, MON_HT_SIZE,
                                 &info, HASH_ELEM | HASH_FUNCTION);
