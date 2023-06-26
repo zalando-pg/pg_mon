@@ -18,6 +18,8 @@ readonly pwfile=$(tempfile)
 echo -n $PGPASSWORD > $pwfile
 initdb --pwfile=$pwfile --auth=md5
 
+echo "Starting without pg_stat_statements loaded" && pg_ctl start -w -o "--shared_preload_libraries=pg_mon --unix_socket_directories=$PGHOST" && exit 1
+
 trap cleanup QUIT TERM EXIT
 
 pg_ctl start -w -o "--shared_preload_libraries=pg_mon,pg_stat_statements --unix_socket_directories=$PGHOST"

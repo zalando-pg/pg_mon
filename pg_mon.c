@@ -286,8 +286,17 @@ shmem_shutdown(int code, Datum arg)
 void
 _PG_init(void)
 {
+        const char *shared_preload_libraries_config;
+
         if (!process_shared_preload_libraries_in_progress)
 		    return;
+
+        shared_preload_libraries_config = GetConfigOption("shared_preload_libraries", true, false);
+        if (strstr(shared_preload_libraries_config, "pg_stat_statements") == NULL)
+        {
+            ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+                    errmsg("Failed to load pg_mon module: pg_stat_statements must be loaded via shared_preload_libraries")));
+        }
 
         DefineCustomIntVariable("pg_mon.max_statements",
                                 "Sets the maximum number of statements tracked by pg_mon.",
