@@ -542,14 +542,30 @@ _PU_HOOK
                 break;
         }
     }
-    if (prev_ProcessUtility)
+    nesting_level++;
+    PG_TRY();
     {
-        _prev_hook;
+        if (prev_ProcessUtility)
+            _prev_hook;
+        else
+            _standard_ProcessUtility;
+#if PG_VERSION_NUM < 130000
+        nesting_level--;
+#endif
     }
-    else
+#if PG_VERSION_NUM < 130000
+    PG_CATCH();
+	{
+		nesting_level--;
+		PG_RE_THROW();
+	}
+#else
+    PG_FINALLY();
     {
-        _standard_ProcessUtility;
+        nesting_level--;
     }
+#endif
+    PG_END_TRY();
 }
 
 static void
