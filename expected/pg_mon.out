@@ -364,6 +364,61 @@ select expected_rows, actual_rows, seq_scans, index_scans, nested_loop_join_coun
              0 |          10 |           |             |                      0 | {1}               | {1}
 (1 row)
 
+-- Check that nothing under top-level utility statement is registered (avoid "out of shared memory" error for the inner queries)
+-- NB: the implementation with the static temp_entry var is still erroneous: the moment we start tracking "nesting_level" queries, it hits us again.
+select pg_stat_statements_reset();
+ pg_stat_statements_reset 
+--------------------------
+ 
+(1 row)
+
+create or replace function test_top_level_utility()
+RETURNS void
+language sql
+AS $$
+   select 1 from t;
+$$ ;
+select pg_mon_reset();
+ pg_mon_reset 
+--------------
+ 
+(1 row)
+
+do $proc$
+    declare
+        i integer;
+        poCounter integer := 0;
+    begin
+        while poCounter < 1400
+            loop
+                for i in select t.i from t
+                loop
+                    perform i;
+                end loop;
+            commit;
+            poCounter := poCounter + 1;
+        end loop;
+end $proc$;
+begin;
+declare test_top_level_utility cursor for select test_top_level_utility();
+fetch from test_top_level_utility;
+ test_top_level_utility 
+------------------------
+ 
+(1 row)
+
+fetch all from test_top_level_utility;
+ test_top_level_utility 
+------------------------
+(0 rows)
+
+end;
+select query from pg_stat_statements right join pg_mon using (queryid);
+         query         
+-----------------------
+ select pg_mon_reset()
+(1 row)
+
 --Cleanup
 drop table t;
 drop table t2;
