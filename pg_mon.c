@@ -94,7 +94,7 @@ static int	nesting_level = 0;
 extern void _PG_init(void);
 
 /* LWlock to mange the reading and writing the hash table. */
-LWLock	   *mon_lock;
+static LWLock	   *mon_lock;
 
 typedef enum AddHist{
             QUERY_TIME,
@@ -110,8 +110,11 @@ static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 static void pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags);
-static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
-                                uint64 count, bool execute_once);
+#if PG_VERSION_NUM < 180000
+static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count, bool execute_once);
+#else
+static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count);
+#endif
 static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
 static void pgmon_plan_store(QueryDesc *queryDesc);
@@ -442,16 +445,27 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
  * ExecutorRun hook: all we need do is track nesting depth
  */
 static void
-pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
-                                        uint64 count, bool execute_once)
+#if PG_VERSION_NUM < 180000
+pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count, bool execute_once)
+#else
+pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
+#endif
 {
         nesting_level++;
         PG_TRY();
         {
                 if (prev_ExecutorRun)
+#if PG_VERSION_NUM < 180000
                         prev_ExecutorRun(queryDesc, direction, count, execute_once);
+#else
+                        prev_ExecutorRun(queryDesc, direction, count);
+#endif
                 else
+#if PG_VERSION_NUM < 180000
                         standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#else
+                        standard_ExecutorRun(queryDesc, direction, count);
+#endif
 #if PG_VERSION_NUM < 130000
                 nesting_level--;
 #endif
