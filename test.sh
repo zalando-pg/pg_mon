@@ -16,7 +16,7 @@ set -e
 
 readonly pwfile=$(tempfile)
 echo -n $PGPASSWORD > $pwfile
-initdb --pwfile=$pwfile --auth=md5
+initdb --pwfile=$pwfile --auth=scram-sha-256
 
 echo "Starting without pg_stat_statements loaded" && pg_ctl start -w -o "--shared_preload_libraries=pg_mon --unix_socket_directories=$PGHOST" && exit 1
 
