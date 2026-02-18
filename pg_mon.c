@@ -641,6 +641,14 @@ pgmon_exec_store(QueryDesc *queryDesc)
         if (!mon_ht)
                 return;
 
+        if (hash_get_num_entries(mon_ht) > MON_HT_SIZE * 0.95)
+        {
+            ereport(WARNING, (errmsg("pg_mon: hash table nearly full"),
+                            errdetail("Entries: %ld, Limit: %d (%.1f%% full)",
+                                     hash_get_num_entries(mon_ht), MON_HT_SIZE,
+                                     (hash_get_num_entries(mon_ht) * 100.0) / MON_HT_SIZE)));
+        }
+
         LWLockAcquire(mon_lock, LW_SHARED);
         entry = create_or_get_entry(temp_entry, queryId, queryDesc);
 
@@ -759,6 +767,8 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
         */
         if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
         {
+            ereport(LOG, (errmsg("pg_mon: RESET triggered, limit reached: %ld/%d", 
+                                 hash_get_num_entries(mon_ht), MON_HT_SIZE)));
             pg_mon_reset_internal();
         }
 
@@ -768,6 +778,11 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
         {
             *entry = temp_entry;
             SpinLockInit(&entry->mutex);
+            
+            ereport(LOG, (errmsg("pg_mon: NEW entry created"),
+                         errdetail("QueryID: %ld, Entries: %ld/%d, Query: %s",
+                                  queryId, hash_get_num_entries(mon_ht), MON_HT_SIZE,
+                                  queryDesc->sourceText)));
 
             /* Since this is a new query,  log the query text */
             if (CONFIG_LOG_NEW_QUERY)
@@ -1143,12 +1158,19 @@ pg_mon_reset_internal()
 {
     HASH_SEQ_STATUS status;
     mon_rec *entry;
+    long removed_count = 0;
+    long entries_before = hash_get_num_entries(mon_ht);
 
     hash_seq_init(&status, mon_ht);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
+        removed_count++;
     }
+    
+    ereport(LOG, (errmsg("pg_mon: reset removed entries"),
+                 errdetail("Entries before: %ld, Removed: %ld, Remaining: %ld",
+                          entries_before, removed_count, hash_get_num_entries(mon_ht))));
 }
 
 /* Update the histogram for the current query */
