@@ -382,6 +382,10 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
+    ereport(LOG, (errmsg("pg_mon: ExecutorStart ENTRY"),
+        errdetail("QueryID=%ld, nesting_level=%d, sourceText=%.50s",
+                  queryDesc->plannedstmt->queryId, nesting_level, queryDesc->sourceText)));
+
     if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
     {
        /*
@@ -534,8 +538,17 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
     uint64		queryId = queryDesc->plannedstmt->queryId;
 
+    ereport(LOG, (errmsg("pg_mon: ExecutorEnd ENTRY"),
+        errdetail("QueryID=%ld, nesting_level=%d, temp_entry.queryid=%ld, will_store=%s",
+                  queryId, nesting_level, temp_entry.queryid,
+                  (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0) ? "YES" : "NO")));
+
     if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
     {
+            ereport(LOG, (errmsg("pg_mon: ExecutorEnd - STORING to hash table"),
+                errdetail("QueryID param=%ld, temp_entry.queryid=%ld",
+                          queryId, temp_entry.queryid)));
+
             /*
              * Make sure stats accumulation is done.
              * (Note: it's okay if several levels of hook all do this.)
