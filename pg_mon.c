@@ -382,10 +382,6 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         else
                 standard_ExecutorStart(queryDesc, eflags);
 
-    ereport(LOG, (errmsg("pg_mon: ExecutorStart ENTRY"),
-        errdetail("QueryID=%ld, nesting_level=%d, sourceText=%.50s",
-                  queryDesc->plannedstmt->queryId, nesting_level, queryDesc->sourceText)));
-
     if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
     {
        /*
@@ -538,11 +534,6 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
     uint64		queryId = queryDesc->plannedstmt->queryId;
 
-    ereport(LOG, (errmsg("pg_mon: ExecutorEnd ENTRY"),
-        errdetail("QueryID=%ld, nesting_level=%d, temp_entry.queryid=%ld, will_store=%s",
-                  queryId, nesting_level, temp_entry.queryid,
-                  (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0) ? "YES" : "NO")));
-
     if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
     {
             ereport(LOG, (errmsg("pg_mon: ExecutorEnd - STORING to hash table"),
@@ -657,14 +648,6 @@ pgmon_exec_store(QueryDesc *queryDesc)
         /* Safety check... */
         if (!mon_ht)
                 return;
-
-        if (hash_get_num_entries(mon_ht) > MON_HT_SIZE * 0.95)
-        {
-            ereport(WARNING, (errmsg("pg_mon: hash table nearly full"),
-                            errdetail("Entries: %ld, Limit: %d (%.1f%% full)",
-                                     hash_get_num_entries(mon_ht), MON_HT_SIZE,
-                                     (hash_get_num_entries(mon_ht) * 100.0) / MON_HT_SIZE)));
-        }
 
         LWLockAcquire(mon_lock, LW_SHARED);
         entry = create_or_get_entry(temp_entry, queryId, queryDesc);
