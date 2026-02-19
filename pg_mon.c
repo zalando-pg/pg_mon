@@ -431,6 +431,10 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
         memset(&temp_entry, 0, sizeof(mon_rec));
         temp_entry.queryid = queryDesc->plannedstmt->queryId;
 
+        ereport(LOG, (errmsg("pg_mon: pgmon_ExecutorStart called"),
+            errdetail("QueryID=%ld, Query: %s",
+                      queryDesc->plannedstmt->queryId, queryDesc->sourceText)));
+
         /* Add the bucket boundaries for the entry */
         memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
         memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
@@ -780,8 +784,9 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
             SpinLockInit(&entry->mutex);
             
             ereport(LOG, (errmsg("pg_mon: NEW entry created"),
-                         errdetail("QueryID: %ld, Entries: %ld/%d, Query: %s",
-                                  queryId, hash_get_num_entries(mon_ht), MON_HT_SIZE,
+                         errdetail("QueryID param=%ld, entry->queryid=%ld, Entries: %ld/%d, Query: %s",
+                                  queryId, entry->queryid,
+                                  hash_get_num_entries(mon_ht), MON_HT_SIZE,
                                   queryDesc->sourceText)));
 
             /* Since this is a new query,  log the query text */
