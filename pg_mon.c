@@ -430,10 +430,6 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             memset(&temp_entry, 0, sizeof(mon_rec));
             temp_entry.queryid = queryDesc->plannedstmt->queryId;
 
-            ereport(LOG, (errmsg("pg_mon: pgmon_ExecutorStart called"),
-                errdetail("QueryID=%ld, Query: %s",
-                        queryDesc->plannedstmt->queryId, queryDesc->sourceText)));
-
             /* Add the bucket boundaries for the entry */
             memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
             memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
@@ -535,10 +531,6 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 
             memset(&temp_entry, 0, sizeof(mon_rec));
             temp_entry.queryid = queryId;
-
-            ereport(LOG, (errmsg("pg_mon: ExecutorEnd - STORING to hash table"),
-                errdetail("QueryID param=%ld, temp_entry.queryid=%ld",
-                          queryId, temp_entry.queryid)));
 
             /*
              * Make sure stats accumulation is done.
@@ -781,8 +773,6 @@ static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, Q
         */
         if (hash_get_num_entries(mon_ht) >= MON_HT_SIZE)
         {
-            ereport(LOG, (errmsg("pg_mon: RESET triggered, limit reached: %ld/%d", 
-                                 hash_get_num_entries(mon_ht), MON_HT_SIZE)));
             pg_mon_reset_internal();
         }
 
@@ -792,12 +782,6 @@ static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, Q
         {
             *entry = *temp_entry;
             SpinLockInit(&entry->mutex);
-            
-            ereport(LOG, (errmsg("pg_mon: NEW entry created"),
-                         errdetail("QueryID param=%ld, entry->queryid=%ld, Entries: %ld/%d, Query: %s",
-                                  queryId, entry->queryid,
-                                  hash_get_num_entries(mon_ht), MON_HT_SIZE,
-                                  queryDesc->sourceText)));
 
             /* Since this is a new query,  log the query text */
             if (CONFIG_LOG_NEW_QUERY)
@@ -1173,19 +1157,12 @@ pg_mon_reset_internal()
 {
     HASH_SEQ_STATUS status;
     mon_rec *entry;
-    long removed_count = 0;
-    long entries_before = hash_get_num_entries(mon_ht);
 
     hash_seq_init(&status, mon_ht);
     while ((entry = hash_seq_search(&status)) != NULL)
     {
         hash_search(mon_ht, &entry->queryid, HASH_REMOVE, NULL);
-        removed_count++;
     }
-    
-    ereport(LOG, (errmsg("pg_mon: reset removed entries"),
-                 errdetail("Entries before: %ld, Removed: %ld, Remaining: %ld",
-                          entries_before, removed_count, hash_get_num_entries(mon_ht))));
 }
 
 /* Update the histogram for the current query */
