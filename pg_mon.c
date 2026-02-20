@@ -117,8 +117,8 @@ static void pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uin
 #endif
 static void pgmon_ExecutorFinish(QueryDesc *queryDesc);
 static void pgmon_ExecutorEnd(QueryDesc *queryDesc);
-static void pgmon_plan_store(QueryDesc *queryDesc);
-static void pgmon_exec_store(QueryDesc *queryDesc);
+static void pgmon_plan_store(QueryDesc *queryDesc, mon_rec *temp_entry);
+static void pgmon_exec_store(QueryDesc *queryDesc, mon_rec *temp_entry);
 #if PG_VERSION_NUM < 130000
 static void PU_hook(PlannedStmt *pstmt, const char *queryString,
 						   ProcessUtilityContext context, ParamListInfo params,
@@ -175,7 +175,7 @@ static void shmem_shutdown(int code, Datum arg);
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
 static void update_histogram(volatile mon_rec *entry, AddHist);
 static void pg_mon_reset_internal(void);
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDesc *queryDesc);
+static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, QueryDesc *queryDesc);
 static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
 static const char * scan_string(NodeTag type);
 
@@ -196,11 +196,6 @@ static int64 row_bucket_bounds[ROWNUMBUCKETS] = {
                                         30000, 50000, 70000, 100000, 1000000
                                         };
 
-/*
- * Keep a temporary record to store the plan information of the
- * current query
- */
-static mon_rec temp_entry;
 
 /*
  * Estimate shared memory space needed.
@@ -428,20 +423,24 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
         queryDesc->instrument_options |= INSTRUMENT_ROWS;
 
-        memset(&temp_entry, 0, sizeof(mon_rec));
-        temp_entry.queryid = queryDesc->plannedstmt->queryId;
+        if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
+        {
+            mon_rec temp_entry;
 
-        ereport(LOG, (errmsg("pg_mon: pgmon_ExecutorStart called"),
-            errdetail("QueryID=%ld, Query: %s",
-                      queryDesc->plannedstmt->queryId, queryDesc->sourceText)));
+            memset(&temp_entry, 0, sizeof(mon_rec));
+            temp_entry.queryid = queryDesc->plannedstmt->queryId;
 
-        /* Add the bucket boundaries for the entry */
-        memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
-        memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
-        memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+            ereport(LOG, (errmsg("pg_mon: pgmon_ExecutorStart called"),
+                errdetail("QueryID=%ld, Query: %s",
+                        queryDesc->plannedstmt->queryId, queryDesc->sourceText)));
 
-        if (!CONFIG_PLAN_INFO_DISABLE)
-            pgmon_plan_store(queryDesc);
+            /* Add the bucket boundaries for the entry */
+            memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
+            memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+            memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+
+            pgmon_plan_store(queryDesc, &temp_entry);
+        }
     }
 }
 
@@ -495,10 +494,6 @@ pgmon_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
 static void
 pgmon_ExecutorFinish(QueryDesc *queryDesc)
 {
-    if (queryDesc->planstate->instrument && nesting_level == 0)
-    {
-       temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
-    }
     nesting_level++;
 
     PG_TRY();
@@ -536,6 +531,11 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
 
     if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
     {
+            mon_rec temp_entry;
+
+            memset(&temp_entry, 0, sizeof(mon_rec));
+            temp_entry.queryid = queryId;
+
             ereport(LOG, (errmsg("pg_mon: ExecutorEnd - STORING to hash table"),
                 errdetail("QueryID param=%ld, temp_entry.queryid=%ld",
                           queryId, temp_entry.queryid)));
@@ -547,8 +547,22 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
             InstrEndLoop(queryDesc->totaltime);
             InstrEndLoop(queryDesc->planstate->instrument);
 
+            /* Add the bucket boundaries for the entry */
+            memcpy(temp_entry.query_time_buckets, bucket_bounds, sizeof(bucket_bounds));
+            memcpy(temp_entry.actual_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+            memcpy(temp_entry.est_row_buckets, row_bucket_bounds, sizeof(row_bucket_bounds));
+
+            if (!CONFIG_PLAN_INFO_DISABLE)
+            {
+                plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, &temp_entry);
+                temp_entry.current_expected_rows = queryDesc->planstate->plan->plan_rows;
+            }
+
+            if (queryDesc->planstate->instrument)
+                temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+
             /* Save query information */
-            pgmon_exec_store(queryDesc);
+            pgmon_exec_store(queryDesc, &temp_entry);
     }
 
     if (prev_ExecutorEnd)
@@ -600,7 +614,7 @@ _PU_HOOK
 }
 
 static void
-pgmon_plan_store(QueryDesc *queryDesc)
+pgmon_plan_store(QueryDesc *queryDesc, mon_rec *temp_entry)
 {
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
@@ -613,8 +627,8 @@ pgmon_plan_store(QueryDesc *queryDesc)
 
         if (!CONFIG_PLAN_INFO_DISABLE)
         {
-            plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, &temp_entry);
-            temp_entry.current_expected_rows = queryDesc->planstate->plan->plan_rows;
+            plan_tree_traversal(queryDesc, queryDesc->plannedstmt->planTree, temp_entry);
+            temp_entry->current_expected_rows = queryDesc->planstate->plan->plan_rows;
         }
 
         /*
@@ -624,7 +638,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
             LWLockAcquire(mon_lock, LW_SHARED);
-            entry = create_or_get_entry(temp_entry, temp_entry.queryid, queryDesc);
+            entry = create_or_get_entry(temp_entry, temp_entry->queryid, queryDesc);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
@@ -635,7 +649,7 @@ pgmon_plan_store(QueryDesc *queryDesc)
 }
 
 static void
-pgmon_exec_store(QueryDesc *queryDesc)
+pgmon_exec_store(QueryDesc *queryDesc, mon_rec *temp_entry)
 {
         mon_rec  *entry = NULL;
         volatile mon_rec *e;
@@ -656,7 +670,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
         SpinLockAcquire(&e->mutex);
 
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
-        e->first_tuple_time = temp_entry.first_tuple_time;
+        e->first_tuple_time = temp_entry->first_tuple_time;
         update_histogram(e, QUERY_TIME);
         e->current_actual_rows = queryDesc->totaltime->ntuples;
         update_histogram(e, ACTUAL_ROWS);
@@ -680,11 +694,11 @@ pgmon_exec_store(QueryDesc *queryDesc)
          */
         if (!CONFIG_PLAN_INFO_DISABLE)
         {
-            for (j = 0; j < MAX_TABLES && temp_entry.seq_scans[j] != 0; j++)
+            for (j = 0; j < MAX_TABLES && temp_entry->seq_scans[j] != 0; j++)
             {
                 for (i = 0; i < MAX_TABLES && entry->seq_scans[i] != 0; i++)
                 {
-                    if (temp_entry.seq_scans[j] == entry->seq_scans[i])
+                    if (temp_entry->seq_scans[j] == entry->seq_scans[i])
                     {
                         is_present = true;
                         break;
@@ -692,16 +706,16 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 }
                 if (!is_present && i < MAX_TABLES)
                 {
-                    entry->seq_scans[i] = temp_entry.seq_scans[j];
+                    entry->seq_scans[i] = temp_entry->seq_scans[j];
                 }
                 is_present = false;
             }
 
-            for (j = 0; j < MAX_TABLES && temp_entry.index_scans[j] != 0; j++)
+            for (j = 0; j < MAX_TABLES && temp_entry->index_scans[j] != 0; j++)
             {
                 for (i = 0; i < MAX_TABLES && entry->index_scans[i] != 0; i++)
                 {
-                    if (temp_entry.index_scans[j] == entry->index_scans[i])
+                    if (temp_entry->index_scans[j] == entry->index_scans[i])
                     {
                         is_present = true;
                         break;
@@ -709,16 +723,16 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 }
                 if (!is_present && i < MAX_TABLES)
                 {
-                    entry->index_scans[i] = temp_entry.index_scans[j];
+                    entry->index_scans[i] = temp_entry->index_scans[j];
                 }
                 is_present = false;
             }
 
-            for (j = 0; j < MAX_TABLES && temp_entry.bitmap_scans[j] != 0; j++)
+            for (j = 0; j < MAX_TABLES && temp_entry->bitmap_scans[j] != 0; j++)
             {
                 for (i = 0; i < MAX_TABLES && entry->bitmap_scans[i] != 0; i++)
                 {
-                    if (temp_entry.bitmap_scans[j] == entry->bitmap_scans[i])
+                    if (temp_entry->bitmap_scans[j] == entry->bitmap_scans[i])
                     {
                         is_present = true;
                         break;
@@ -726,16 +740,16 @@ pgmon_exec_store(QueryDesc *queryDesc)
                 }
                 if (!is_present && i < MAX_TABLES)
                 {
-                    entry->bitmap_scans[i] = temp_entry.bitmap_scans[j];
+                    entry->bitmap_scans[i] = temp_entry->bitmap_scans[j];
                 }
                 is_present = false;
             }
-            if (entry->NestedLoopJoin < temp_entry.NestedLoopJoin)
-                entry->NestedLoopJoin = temp_entry.NestedLoopJoin;
-            if (entry->HashJoin < temp_entry.HashJoin)
-                entry->HashJoin = temp_entry.HashJoin;
-            if (entry->MergeJoin < temp_entry.MergeJoin)
-                entry->MergeJoin = temp_entry.MergeJoin;
+            if (entry->NestedLoopJoin < temp_entry->NestedLoopJoin)
+                entry->NestedLoopJoin = temp_entry->NestedLoopJoin;
+            if (entry->HashJoin < temp_entry->HashJoin)
+                entry->HashJoin = temp_entry->HashJoin;
+            if (entry->MergeJoin < temp_entry->MergeJoin)
+                entry->MergeJoin = temp_entry->MergeJoin;
         }
 
         SpinLockRelease(&e->mutex);
@@ -748,7 +762,7 @@ pgmon_exec_store(QueryDesc *queryDesc)
  * shared lock on hash_table which could be upgraded to exclusive mode, if new
  * entry has to be added.
  */
-static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDesc *queryDesc)
+static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, QueryDesc *queryDesc)
 {
     mon_rec *entry = NULL;
     bool found = false;
@@ -776,7 +790,7 @@ static mon_rec * create_or_get_entry(mon_rec temp_entry, int64 queryId, QueryDes
 
         if (!found)
         {
-            *entry = temp_entry;
+            *entry = *temp_entry;
             SpinLockInit(&entry->mutex);
             
             ereport(LOG, (errmsg("pg_mon: NEW entry created"),
