@@ -94,7 +94,23 @@ static int	nesting_level = 0;
 extern void _PG_init(void);
 
 /* LWlock to mange the reading and writing the hash table. */
+#if PG_VERSION_NUM < 190000
 static LWLock	   *mon_lock;
+#else
+static LWLockPadded	   *mon_lock;
+#endif
+
+#if PG_VERSION_NUM >= 190000
+static HTAB *mon_ht;
+
+static void shmem_request(void *arg);
+static void shmem_init(void *arg);
+
+static const ShmemCallbacks shmem_callbacks = {
+	.request_fn = shmem_request,
+	.init_fn = shmem_init,
+};
+#endif
 
 typedef enum AddHist{
             QUERY_TIME,
@@ -165,11 +181,13 @@ static void PU_hook(PlannedStmt *pstmt, const char *queryString,
         standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc)
 #endif
 
+#if PG_VERSION_NUM < 190000
 /* Saved hook values in case of unload */
 #if PG_VERSION_NUM >= 150000
 static shmem_request_hook_type prev_shmem_request_hook = NULL;
 #endif
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+#endif
 static void shmem_shutdown(int code, Datum arg);
 
 static void plan_tree_traversal(QueryDesc *query, Plan *plan, mon_rec *entry);
@@ -179,8 +197,10 @@ static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, Q
 static void scan_info(Plan *subplan, mon_rec *entry, QueryDesc *queryDesc);
 static const char * scan_string(NodeTag type);
 
+#if PG_VERSION_NUM < 190000
 /* Hash table in the shared memory */
 static HTAB *mon_ht;
+#endif
 
 /* Bucket boundaries for the histogram in ms, from 5 ms to 1 minute */
 static int64 bucket_bounds[NUMBUCKETS] = {
@@ -196,7 +216,7 @@ static int64 row_bucket_bounds[ROWNUMBUCKETS] = {
                                         30000, 50000, 70000, 100000, 1000000
                                         };
 
-
+#if PG_VERSION_NUM < 190000
 /*
  * Estimate shared memory space needed.
  */
@@ -206,8 +226,27 @@ qmon_memsize(void)
         return hash_estimate_size(MON_HT_SIZE, sizeof(mon_rec));
 
 }
+#endif
 
-#if PG_VERSION_NUM >= 150000
+#if PG_VERSION_NUM >= 190000
+static void
+shmem_request(void *arg)
+{
+	ShmemRequestHash(.name = "mon_hash",
+					 .nelems = MON_HT_SIZE,
+					 .hash_info.keysize = sizeof(int64),
+					 .hash_info.entrysize = sizeof(mon_rec),
+                     .hash_info.hash = tag_hash,
+					 .hash_flags = HASH_ELEM | HASH_FUNCTION,
+					 .ptr = &mon_ht,
+		);
+	ShmemRequestStruct(.name = "mon_lock",
+					   .size = sizeof(*mon_lock),
+					   .ptr = (void **) &mon_lock,
+		);
+
+}
+#elif PG_VERSION_NUM >= 150000
 /*
  * shmem_request hook: request additional shared resources.  We'll allocate or
  * attach to the shared resources in shmem_startup().
@@ -222,7 +261,7 @@ shmem_request(void)
 	RequestNamedLWLockTranche("mon_lock", 1);
 }
 #endif
-
+#if PG_VERSION_NUM < 190000
 /*
  * shmem_startup hook: allocate and attach to shared memory,
  */
@@ -263,6 +302,19 @@ shmem_startup(void)
     if (!IsUnderPostmaster)
             on_shmem_exit(shmem_shutdown, (Datum) 0);
 }
+#endif
+#if PG_VERSION_NUM >= 190000
+static void
+shmem_init(void *arg)
+{
+    int			tranche_id;
+
+    tranche_id = LWLockNewTrancheId("pg_mon");
+	LWLockInitialize(&mon_lock->lock, tranche_id);
+
+	on_shmem_exit(shmem_shutdown, (Datum) 0);
+}
+#endif
 
 /*
  * shmem_shutdown hook
@@ -338,7 +390,14 @@ _PG_init(void)
                                                             NULL,
                                                             NULL,
                                                             NULL);
+#if PG_VERSION_NUM >= 190000
+    /*
+	 * Register our shared memory needs.
+	 */
+	RegisterShmemCallbacks(&shmem_callbacks);
+#endif
 
+#if PG_VERSION_NUM < 190000
 #if PG_VERSION_NUM < 150000
         /*
          * Request additional shared resources.  (These are no-ops if we're not in
@@ -354,6 +413,7 @@ _PG_init(void)
 #endif
         prev_shmem_startup_hook = shmem_startup_hook;
         shmem_startup_hook = shmem_startup;
+#endif
         prev_ExecutorStart = ExecutorStart_hook;
         ExecutorStart_hook = pgmon_ExecutorStart;
         prev_ExecutorRun = ExecutorRun_hook;
@@ -372,13 +432,16 @@ _PG_init(void)
 static void
 pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
+#if PG_VERSION_NUM < 190000
     if (prev_ExecutorStart)
                 prev_ExecutorStart(queryDesc, eflags);
         else
                 standard_ExecutorStart(queryDesc, eflags);
+#endif
 
     if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
     {
+#if PG_VERSION_NUM < 190000
        /*
         * Set up to track total elapsed time in ExecutorRun.Make sure the space
         * is allocated in the per-query context so it will go away at ExecutorEnd.
@@ -402,6 +465,20 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
 
             MemoryContextSwitchTo(oldcxt);
         }
+#else
+		/* Request all summary instrumentation, i.e. timing, buffers and WAL */
+		queryDesc->query_instr_options |= INSTRUMENT_ALL;
+#endif
+    }
+#if PG_VERSION_NUM >= 190000
+    if (prev_ExecutorStart)
+                prev_ExecutorStart(queryDesc, eflags);
+        else
+                standard_ExecutorStart(queryDesc, eflags);
+#endif
+
+    if (queryDesc->plannedstmt->queryId != UINT64CONST(0) && nesting_level == 0)
+    {
         if (queryDesc->planstate->instrument == NULL)
         {
             /*
@@ -414,8 +491,10 @@ pgmon_ExecutorStart(QueryDesc *queryDesc, int eflags)
             oldcxt = MemoryContextSwitchTo(queryDesc->estate->es_query_cxt);
             #if PG_VERSION_NUM < 140000
                 queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL);
-            #else
+            #elif PG_VERSION_NUM < 190000
                 queryDesc->planstate->instrument = InstrAlloc(1, INSTRUMENT_ALL, false);
+            #else
+                queryDesc->planstate->instrument = InstrAllocNode(1, INSTRUMENT_ALL);
             #endif
 
             MemoryContextSwitchTo(oldcxt);
@@ -524,8 +603,11 @@ static void
 pgmon_ExecutorEnd(QueryDesc *queryDesc)
 {
     uint64		queryId = queryDesc->plannedstmt->queryId;
-
+#if PG_VERSION_NUM < 190000
     if (queryId != UINT64CONST(0) && queryDesc->totaltime && nesting_level == 0)
+#else
+    if (queryId != UINT64CONST(0) && queryDesc->query_instr && nesting_level == 0)
+#endif
     {
             mon_rec temp_entry;
 
@@ -536,7 +618,9 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
              * Make sure stats accumulation is done.
              * (Note: it's okay if several levels of hook all do this.)
              */
+#if PG_VERSION_NUM < 190000
             InstrEndLoop(queryDesc->totaltime);
+#endif
             InstrEndLoop(queryDesc->planstate->instrument);
 
             /* Add the bucket boundaries for the entry */
@@ -551,7 +635,11 @@ pgmon_ExecutorEnd(QueryDesc *queryDesc)
             }
 
             if (queryDesc->planstate->instrument)
+#if PG_VERSION_NUM < 190000
                 temp_entry.first_tuple_time = queryDesc->planstate->instrument->firsttuple * 1000;
+#else
+                temp_entry.first_tuple_time = INSTR_TIME_GET_MILLISEC(queryDesc->planstate->instrument->firsttuple);
+#endif
 
             /* Save query information */
             pgmon_exec_store(queryDesc, &temp_entry);
@@ -629,14 +717,22 @@ pgmon_plan_store(QueryDesc *queryDesc, mon_rec *temp_entry)
          */
         if (CONFIG_PLAN_INFO_IMMEDIATE && !CONFIG_PLAN_INFO_DISABLE)
         {
+#if PG_VERSION_NUM < 190000
             LWLockAcquire(mon_lock, LW_SHARED);
+#else
+            LWLockAcquire(&mon_lock->lock, LW_SHARED);
+#endif
             entry = create_or_get_entry(temp_entry, temp_entry->queryid, queryDesc);
 
             e = (volatile mon_rec *) entry;
             SpinLockAcquire(&e->mutex);
             update_histogram(e, EST_ROWS);
             SpinLockRelease(&e->mutex);
+#if PG_VERSION_NUM < 190000
             LWLockRelease(mon_lock);
+#else
+            LWLockRelease(&mon_lock->lock);
+#endif
         }
 }
 
@@ -655,16 +751,27 @@ pgmon_exec_store(QueryDesc *queryDesc, mon_rec *temp_entry)
         if (!mon_ht)
                 return;
 
+#if PG_VERSION_NUM < 190000
         LWLockAcquire(mon_lock, LW_SHARED);
+#else
+        LWLockAcquire(&mon_lock->lock, LW_SHARED);
+#endif
         entry = create_or_get_entry(temp_entry, queryId, queryDesc);
 
         e = (volatile mon_rec *) entry;
         SpinLockAcquire(&e->mutex);
-
+#if PG_VERSION_NUM < 190000
         e->current_total_time = queryDesc->totaltime->total * 1000; //(in msec)
+#else
+        e->current_total_time = INSTR_TIME_GET_MILLISEC(queryDesc->query_instr->total);
+#endif
         e->first_tuple_time = temp_entry->first_tuple_time;
         update_histogram(e, QUERY_TIME);
+#if PG_VERSION_NUM < 190000
         e->current_actual_rows = queryDesc->totaltime->ntuples;
+#else
+        e->current_actual_rows = queryDesc->planstate->instrument->ntuples;
+#endif
         update_histogram(e, ACTUAL_ROWS);
 
         /*
@@ -745,7 +852,11 @@ pgmon_exec_store(QueryDesc *queryDesc, mon_rec *temp_entry)
         }
 
         SpinLockRelease(&e->mutex);
+#if PG_VERSION_NUM < 190000
         LWLockRelease(mon_lock);
+#else
+        LWLockRelease(&mon_lock->lock);
+#endif
 }
 
 /*
@@ -763,8 +874,13 @@ static mon_rec * create_or_get_entry(const mon_rec *temp_entry, int64 queryId, Q
 
     if (!entry)
     {
+#if PG_VERSION_NUM < 190000
         LWLockRelease(mon_lock);
         LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+#else
+        LWLockRelease(&mon_lock->lock);
+        LWLockAcquire(&mon_lock->lock, LW_EXCLUSIVE);
+#endif
        /*
         * Check if the number of entries are exceeding the limit. Currently,
         * we are handling this case by resetting the pg_mon view, but could be
@@ -955,8 +1071,11 @@ pg_mon(PG_FUNCTION_ARGS)
         tupstore = tuplestore_begin_heap(true, false, work_mem);
 
         MemoryContextSwitchTo(oldcontext);
-
+#if PG_VERSION_NUM < 190000
         LWLockAcquire(mon_lock, LW_SHARED);
+#else
+        LWLockAcquire(&mon_lock->lock, LW_SHARED);
+#endif
 
         hash_seq_init(&status, mon_ht);
         while ((entry = hash_seq_search(&status)) != NULL)
@@ -965,7 +1084,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 Datum	   *rownumdatums = (Datum *) palloc(ROWNUMBUCKETS * sizeof(Datum));
                 Datum		values[MON_COLS];
                 bool		nulls[MON_COLS] = {0};
-                int			i = 0, n, idx = 0, last_fill_bucket = 0;
+                int			i = 0, n, idx, last_fill_bucket = 0;
                 ArrayType  *arry = NULL;
 
                 memset(values, 0, sizeof(values));
@@ -985,7 +1104,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
-                    int n = 0, idx = 0;
+                    idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->seq_scans[n] != 0; n++)
                         datums[idx++] = ObjectIdGetDatum(entry->seq_scans[n]);
 #if PG_VERSION_NUM >= 160000
@@ -1001,7 +1120,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
-                    int n = 0, idx = 0;
+                    idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->index_scans[n] != 0; n++)
                         datums[idx++] = ObjectIdGetDatum(entry->index_scans[n]);
 #if PG_VERSION_NUM >= 160000
@@ -1017,7 +1136,7 @@ pg_mon(PG_FUNCTION_ARGS)
                 {
                     Datum	   *datums = (Datum *) palloc(MAX_TABLES * sizeof(Datum));
                     ArrayType  *arry;
-                    int n = 0, idx = 0;
+                    idx = 0;
                     for (n = 0; n < MAX_TABLES && entry->bitmap_scans[n] != 0; n++)
                         datums[idx++] = ObjectIdGetDatum(entry->bitmap_scans[n]);
 #if PG_VERSION_NUM >= 160000
@@ -1040,6 +1159,7 @@ pg_mon(PG_FUNCTION_ARGS)
                         break;
                     }
                 }
+                idx = 0;
                 for (n = 0; n <= last_fill_bucket; n++)
                 {
                     numdatums[idx++] = Int64GetDatum(entry->query_time_buckets[n]);
@@ -1051,7 +1171,8 @@ pg_mon(PG_FUNCTION_ARGS)
 #endif
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                idx = 0;
+                for (n = 0; n <= last_fill_bucket; n++)
                 {
                      numdatums[idx++] = Int64GetDatum(entry->query_time_freq[n]);
                 }
@@ -1074,7 +1195,8 @@ pg_mon(PG_FUNCTION_ARGS)
                     }
                 }
 
-                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                idx = 0;
+                for (n = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->actual_row_buckets[n]);
                 }
@@ -1085,7 +1207,8 @@ pg_mon(PG_FUNCTION_ARGS)
 #endif
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                idx = 0;
+                for (n = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->actual_row_freq[n]);
                 }
@@ -1105,7 +1228,8 @@ pg_mon(PG_FUNCTION_ARGS)
                         break;
                     }
                 }
-                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                idx = 0;
+                for (n = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->est_row_buckets[n]);
                 }
@@ -1116,7 +1240,8 @@ pg_mon(PG_FUNCTION_ARGS)
 #endif
                 values[i++] = PointerGetDatum(arry);
 
-                for (n = 0, idx = 0; n <= last_fill_bucket; n++)
+                idx = 0;
+                for (n = 0; n <= last_fill_bucket; n++)
                 {
                     rownumdatums[idx++] = Int64GetDatum(entry->est_row_freq[n]);
                 }
@@ -1130,7 +1255,11 @@ pg_mon(PG_FUNCTION_ARGS)
                 tuplestore_putvalues(tupstore, tupdesc, values, nulls);
         }
 
-        LWLockRelease(mon_lock);
+#if PG_VERSION_NUM < 190000
+    LWLockRelease(mon_lock);
+#else
+    LWLockRelease(&mon_lock->lock);
+#endif
 
         rsinfo->returnMode = SFRM_Materialize;
         rsinfo->setResult = tupstore;
@@ -1145,15 +1274,23 @@ pg_mon(PG_FUNCTION_ARGS)
 Datum
 pg_mon_reset(PG_FUNCTION_ARGS)
 {
+#if PG_VERSION_NUM < 190000
     LWLockAcquire(mon_lock, LW_EXCLUSIVE);
+#else
+    LWLockAcquire(&mon_lock->lock, LW_EXCLUSIVE);
+#endif
     pg_mon_reset_internal();
+#if PG_VERSION_NUM < 190000
     LWLockRelease(mon_lock);
+#else
+    LWLockRelease(&mon_lock->lock);
+#endif
 
     PG_RETURN_VOID();
 }
 
 static void
-pg_mon_reset_internal()
+pg_mon_reset_internal(void)
 {
     HASH_SEQ_STATUS status;
     mon_rec *entry;
